@@ -1,0 +1,57 @@
+# Organisation Settings
+org_name: "Example Inc"
+
+# URL Settings
+awx_subdomain: awx1
+rancher_url: rancher.example.org
+certbot_email: example@protonmail.com
+
+# RKE2 Settings
+rke2_load_balancer: leader.example.org
+rke2_bootstrap_node: awx1.example.org
+rke2_roles: [ "controlplane", "worker" ]
+
+# AWX Settings
+admin_username: admin
+secret_key: << strong password >>
+pg_password: << strong password >>
+admin_password: << strong password >>
+self_signed_certs: false
+validate_certs: false
+
+# Update/Deploy All Settings
+update_schedule_start: '20200101T000000'
+update_schedule_frequency: 'WEEKLY'
+update_schedule_interval: 1
+
+# Repository Settings
+deploy_source: https://gitlab.com/PC-Admin/awx-ansible
+deploy_branch: main
+
+# Rancher settings
+rancher_enabled: false
+rancher_password: << strong password >>
+
+# Backup Server Settings
+backup_enabled: false
+backup_server_ip: '10.1.3.55'
+backup_directory: /home/borg/AWX/
+backup_passphrase: << strong password >>
+backup_borg_retention_days: 90
+backup_local_copies: 3
+backup_awx_schedule_start: '20200101T000000'
+backup_awx_schedule_frequency: 'HOURLY'
+backup_awx_schedule_interval: 3
+
+# Monitor Settings
+monitor_enabled: false
+grafana_url: grafana.example.org
+grafana_com_username: michael5collins
+grafana_com_token: << Grafana.com API Token >>
+#grafana_admin_default_password: admin
+
+# Error Reporting Settings
+mailgun_enabled: false
+mailgun_api_token: << MailGun API Token >>
+mailgun_domain_name: mg.example.org
+admin_email: useremail@protonmail.com

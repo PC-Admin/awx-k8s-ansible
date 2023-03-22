@@ -1,0 +1,5 @@
+
+[awx_servers]
+awx1.example.org.org ansible_host=awx1.example.org.org ansible_ssh_user=root
+awx2.example.org.org ansible_host=awx2.example.org.org ansible_ssh_user=root
+awx3.example.org.org ansible_host=awx3.example.org.org ansible_ssh_user=root

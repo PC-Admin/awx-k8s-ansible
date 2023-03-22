@@ -1,0 +1,20 @@
+
+# Spawns or destroys a DigitalOcean Droplet
+- import_tasks: "{{ role_path }}/tasks/spawn_do_droplet.yml"
+  #tags: provision
+  #when: backup_rehearsal_enabled | bool
+
+# Save the Servers IP address
+- import_tasks: "{{ role_path }}/tasks/save_server_ips.yml"
+  tags: provision
+
+# Generates initial variables and sets up SSH access
+- import_tasks: "{{ role_path }}/tasks/generate_initial_variables.yml"
+  tags: provision
+
+# Spawns or destroys a DigitalOcean Load Balancer
+- import_tasks: "{{ role_path }}/tasks/spawn_do_load_balancer.yml"
+
+# Creates or deletes a Cloudflare DNS entry
+- import_tasks: "{{ role_path }}/tasks/cloudflare_dns.yml"
+  #tags: provision

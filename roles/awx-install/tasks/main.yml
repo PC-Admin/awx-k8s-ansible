@@ -1,0 +1,26 @@
+---
+
+# Do prerequisite server setup for AWX
+- import_tasks: "{{ role_path }}/tasks/server_setup.yml"
+  tags: [ 'never', 'setup' ]
+
+# Setup K3s on host
+- import_tasks: "{{ role_path }}/tasks/k3s_setup.yml"
+  tags: [ 'never', 'setup' ]
+
+# Deploy AWX to K3s/Kubernetes
+- import_tasks: "{{ role_path }}/tasks/awx_setup.yml"
+  tags: [ 'never', 'setup' ]
+
+# Setup K9s on host, a popular kubernetes inspection tool
+- import_tasks: "{{ role_path }}/tasks/k9s_setup.yml"
+  tags: [ 'never', 'setup' ]
+
+# Setup the systems Firewall with UFW
+- import_tasks: "{{ role_path }}/tasks/firewall_setup.yml"
+  tags: [ 'never', 'setup-firewall']
+
+# Deploy Rancher for Kubernetes management
+- import_tasks: "{{ role_path }}/tasks/rancher_setup.yml"
+  when: rancher_enabled | bool
+  tags: [ 'never', 'setup-rancher']

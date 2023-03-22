@@ -1,0 +1,187 @@
+---
+
+- name: Ensure /root/cert-manager folder exists
+  ansible.builtin.file:
+    path: /root/cert-manager
+    state: directory
+    mode: 0755
+    owner: root
+    group: root
+
+- name: Download cmctl
+  ansible.builtin.get_url:
+    url: https://github.com/cert-manager/cert-manager/releases/download/v1.10.1/cmctl-linux-amd64.tar.gz
+    dest: /root/cert-manager/
+    checksum: sha256:c0996ec98b87c8ee2854162da25238c4e74092c3ab156710619423f794eb1aa6
+
+- name: Extract cmctl
+  unarchive:
+    src: /root/cert-manager/cmctl-linux-amd64.tar.gz
+    dest: /root/cert-manager
+    remote_src: yes
+
+- name: Install cmctl
+  ansible.builtin.copy:
+    src: /root/cert-manager/cmctl
+    dest: /usr/local/bin
+    remote_src: yes
+    mode: 0755
+
+- name: Git clone awx-operator 1.1.0 (AWX 21.9.0)
+  git:
+    repo: 'https://github.com/ansible/awx-operator.git'
+    dest: /root/awx-operator/
+    version: 1.1.0
+    force: yes
+
+- name: Deploy awx-operator to K3s
+  ansible.builtin.shell: |
+      export 'NAMESPACE=awx' && make deploy --directory=/root/awx-operator/
+
+- name: Extract awx-on-k3s-1.1.0.tar.xz repo
+  unarchive:
+    src: '{{ role_path }}/repos/awx-on-k3s-1.1.0.tar.xz'
+    dest: /root/
+
+- name: Template namespace.yaml
+  ansible.builtin.template:
+    src: '{{ role_path }}/templates/namespace.yaml'
+    dest: /root/awx-on-k3s-1.1.0/base/namespace.yaml
+    owner: root
+    group: root
+    mode: '0640'
+
+- name: Template base/awx.yml (letsencrypt)
+  ansible.builtin.template:
+    src: '{{ role_path }}/templates/awx.yaml-letsencrypt.j2'
+    dest: /root/awx-on-k3s-1.1.0/base/awx.yaml
+    owner: root
+    group: root
+    mode: '0640'
+  when: not self_signed_certs | bool
+
+- name: Template base/awx.yml (self-signed)
+  ansible.builtin.template:
+    src: '{{ role_path }}/templates/awx.yaml-self-signed.j2'
+    dest: /root/awx-on-k3s-1.1.0/base/awx.yaml
+    owner: root
+    group: root
+    mode: '0640'
+  when: self_signed_certs | bool
+
+- name: Template base/kustomization.yml
+  ansible.builtin.template:
+    src: '{{ role_path }}/templates/kustomization.yaml.j2'
+    dest: /root/awx-on-k3s-1.1.0/base/kustomization.yaml
+    owner: root
+    group: root
+    mode: '0640'
+
+# not self_signed_certs stuff
+
+# AWX_HOST="awx.example.com"
+# openssl req -x509 -nodes -days 3650 -newkey rsa:2048 -out ./base/tls.crt -keyout ./base/tls.key -subj "/CN=${AWX_HOST}/O=${AWX_HOST}" -addext "subjectAltName = DNS:${AWX_HOST}"
+
+- name: Generate OpenSSL key files
+  command: |
+      openssl req -x509 -nodes -days 3650 -newkey rsa:2048 -out /root/awx-on-k3s-1.1.0/base/tls.crt -keyout /root/awx-on-k3s-1.1.0/base/tls.key -subj "/CN={{ awx_url }}/O={{ awx_url }}" -addext "subjectAltName = DNS:{{ awx_url }}"
+  args: 
+    creates: /root/awx-on-k3s-1.1.0/base/tls.key
+  when: self_signed_certs | bool
+
+- name: Download cert-manager.yaml manifest
+  ansible.builtin.get_url:
+    url: https://github.com/cert-manager/cert-manager/releases/download/v1.10.1/cert-manager.yaml
+    dest: /root/cert-manager/
+    checksum: sha256:be169fc5333a80c5c4e272f1603ab65361636e27ed513a1ae2c701f93893c0fc
+  when: not self_signed_certs | bool
+
+- name: Apply cert-manager.yaml manifest
+  ansible.builtin.command: |
+      kubectl apply -f /root/cert-manager/cert-manager.yaml
+  when: not self_signed_certs | bool
+
+- name: Check the cert-manager API until it's ready (max 10min)
+  ansible.builtin.command: |
+      cmctl check api --kubeconfig /etc/rancher/k3s/k3s.yaml
+  register: result
+  until: result.stdout.find("The cert-manager API is ready") != -1
+  retries: 20
+  delay: 30
+  when: not self_signed_certs | bool
+
+- name: Template issuer.yaml (letsencrypt)
+  ansible.builtin.template:
+    src: '{{ role_path }}/templates/issuer-letsencrypt.yaml.j2'
+    dest: /root/awx-on-k3s-1.1.0/acme/issuer.yaml
+    owner: root
+    group: root
+    mode: '0640'
+  when: not self_signed_certs | bool
+
+- name: Template issuer.yaml (self-signed certs)
+  ansible.builtin.template:
+    src: '{{ role_path }}/templates/issuer-selfsigned.yaml.j2'
+    dest: /root/awx-on-k3s-1.1.0/acme/issuer.yaml
+    owner: root
+    group: root
+    mode: '0640'
+  when: self_signed_certs | bool
+
+- name: Deploy the issuer
+  ansible.builtin.command: |
+      kubectl apply -k /root/awx-on-k3s-1.1.0/acme
+  retries: 3
+  delay: 15
+  when: not self_signed_certs | bool
+# ^ is this even needed for self signed?
+
+- name: Copy base/middleware.yaml
+  ansible.builtin.template:
+    src: '{{ role_path }}/templates/middleware.yaml'
+    dest: /root/awx-on-k3s-1.1.0/base/middleware.yaml
+    owner: root
+    group: root
+    mode: '0640'
+  when: not self_signed_certs | bool
+
+- name: Apply middleware.yaml to redirect HTTP to HTTPS
+  ansible.builtin.command: |
+      kubectl -n default apply -f /root/awx-on-k3s-1.1.0/base/middleware.yaml
+  when: not self_signed_certs | bool
+  ignore_errors: true
+
+- name: Prepare Persistent Volume directories (1/2)
+  ansible.builtin.file:
+    state: directory
+    path: /data/postgres-13
+    recurse: true
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Prepare Persistent Volume directories (2/2)
+  ansible.builtin.file:
+    state: directory
+    path: /data/projects
+    recurse: true
+    owner: 1000
+    group: root
+    mode: '0755'
+
+- name: Deploy AWX/Automation Controller onto K3s
+  ansible.builtin.command: |
+      kubectl apply -k /root/awx-on-k3s-1.1.0/base
+
+- name: Check if AWX/Automation Controller is deployed (max 12.5min)
+  ansible.builtin.command: |
+      kubectl -n awx logs --tail=10 deployments/awx-operator-controller-manager -c awx-manager
+  register: result
+  until: result.stdout.find("failed=0") != -1
+  failed_when: result.stdout.find("failed=1") != -1
+  retries: 25
+  delay: 30
+
+- name: Deploy the required AWX/Automation Controller Operator objects in the awx namespace.
+  ansible.builtin.command: |
+      kubectl -n awx get awx,all,ingress,secrets

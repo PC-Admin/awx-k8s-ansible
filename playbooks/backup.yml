@@ -1,0 +1,14 @@
+---
+
+- name: "Runs a borgmatic backup on the AWX host OS."
+  hosts: "{{ awx_url }}"
+  gather_facts: false
+
+  tasks:
+    - name: "Run a script to delete all but the desired amount of local dumps."
+      command: sudo /data/backup/cleanup.sh
+
+    - name: "Runs a borgmatic backup on the AWX host OS."
+      command: borgmatic --config /home/borg/.config/borgmatic/config.yaml
+      environment:
+        BORG_PASSPHRASE: "{{ BORG_PASSPHRASE }}"

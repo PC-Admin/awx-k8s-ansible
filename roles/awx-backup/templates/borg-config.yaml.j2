@@ -1,0 +1,34 @@
+location:
+    source_directories:
+        - /data/
+    exclude_patterns:
+        - '- /dev'
+        - '- /proc'
+        - '- /sys'
+        - '- /tmp'
+
+    one_file_system: true
+
+    repositories:
+        - {{ backup_server_ip }}:{{ backup_directory }}
+
+    exclude_caches: true
+
+storage:
+    compression: auto,zstd
+    encryption_passphrase: {{ backup_passphrase }}
+    archive_name_format: '{hostname}-{now}'
+    checkpoint_interval: 600
+
+retention:
+    keep_within: 24H
+    keep_daily: {{ backup_borg_retention_days }}
+    prefix: '{hostname}-'
+
+consistency:
+    checks:
+        - repository
+        - archives
+
+    check_last: 3
+    prefix: '{hostname}-'

@@ -1,0 +1,12 @@
+---
+
+# Additional checks for RKE2
+
+- name: Assert that the number of hosts is odd and >= 3
+  assert:
+    that:
+      - "inventory_hostname | length % 2 == 1"
+      - "inventory_hostname | length >= 3"
+    fail_msg: "For RKE2 the number of targeted hosts must be an odd number and >= 3, exiting playbook..."
+    success_msg: "The number of targeted hosts is an odd number and >= 3, proceeding with RKE2 installation..."
+  run_once: true

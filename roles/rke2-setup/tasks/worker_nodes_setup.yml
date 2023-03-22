@@ -1,0 +1,81 @@
+---
+
+- name: If the node is a worker install the worker role
+  ansible.builtin.shell: |
+      /root/install.sh
+  environment:
+    INSTALL_RKE2_TYPE: "agent"
+  when: "'worker' in rke2_roles" 
+
+- name: Enable the rke2-agent service
+  ansible.builtin.systemd:
+    name: rke2-agent
+    enabled: yes
+  when: "'worker' in rke2_roles"
+
+- name: Ensure that the /etc/rancher/rke2 directory exists on the worker nodes
+  ansible.builtin.file:
+    path: /etc/rancher/rke2
+    state: directory
+    mode: '0755'
+  when: "'worker' in rke2_roles"
+
+- name: Ensure the server line exists in each workers config file
+  ansible.builtin.lineinfile:
+    path: /etc/rancher/rke2/config.yaml
+    line: "server: https://{{ rke2_bootstrap_node }}:9345"
+    state: present
+  when: "'worker' in rke2_roles"
+
+- name: Ensure the token line exists in each workers config file
+  ansible.builtin.lineinfile:
+    path: /etc/rancher/rke2/config.yaml
+    line: "token: {{ rke2_token }}"
+    state: present
+  when: "'worker' in rke2_roles"
+
+- name: Label the worker nodes
+  delegate_to: "{{ rke2_bootstrap_node }}"
+  ansible.builtin.shell: |
+    /var/lib/rancher/rke2/bin/kubectl label node {{ awx_subdomain }} node-role.kubernetes.io/worker=worker --overwrite --kubeconfig /etc/rancher/rke2/rke2.yaml
+  when: "'worker' in rke2_roles"
+
+- name: Start the rke2-agent service
+  ansible.builtin.systemd:
+    name: rke2-agent
+    state: started
+  when: "'worker' in rke2_roles"
+  async: 60
+  poll: 10
+
+- name: Restart the rke2-agent service on the bootstrap node
+  delegate_to: "{{ rke2_bootstrap_node }}"
+  ansible.builtin.systemd:
+    name: rke2-agent
+    state: restarted
+  when: "'worker' in rke2_roles"
+  async: 60
+  poll: 10
+
+- name: Check rke2-agent service status
+  ansible.builtin.shell: |
+    systemctl status rke2-agent
+  register: rke2_agent_status
+  when: "'worker' in rke2_roles"
+
+- name: Display rke2-agent service status
+  ansible.builtin.debug:
+    msg: "{{ rke2_agent_status.stdout_lines }}"
+  when: "'worker' in rke2_roles"
+
+- name: Confirm cluster is functional
+  delegate_to: "{{ rke2_bootstrap_node }}"
+  ansible.builtin.shell: |
+      /var/lib/rancher/rke2/bin/kubectl get nodes --kubeconfig /etc/rancher/rke2/rke2.yaml
+  register: cluster_status
+  run_once: True
+
+- name: Display cluster status output
+  ansible.builtin.debug:
+    msg: "{{ cluster_status.stdout_lines }}"
+  run_once: True

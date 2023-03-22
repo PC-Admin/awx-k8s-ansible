@@ -1,0 +1,55 @@
+---
+
+- debug:
+    msg: "ansible_play_hosts: {{ ansible_play_hosts }}"
+
+- name: Create DigitalOcean Load Balancer #, add all Droplets with the 'awx' tag
+  delegate_to: 127.0.0.1
+  community.digitalocean.digital_ocean_load_balancer:
+    name: "leader.{{ awx_base_domain }}"
+    #algorithm: round_robin
+    state: present
+    region: "{{ do_droplet_region }}"
+    forwarding_rules:
+      - entry_protocol: http
+        entry_port: 80
+        target_protocol: http
+        target_port: 80
+    #tag: awx
+    #tagged_by: value
+    droplet_ids: "{{ droplet_ids }}"
+    oauth_token: '{{ do_api_token }}'
+  run_once: True
+  tags: [ 'never', 'provision' ]
+
+- name: Delete DigitalOcean Load Balancer
+  delegate_to: 127.0.0.1
+  community.digitalocean.digital_ocean_load_balancer:
+    name: "leader.{{ awx_base_domain }}"
+    state: absent
+    #algorithm: round_robin
+    region: "{{ do_droplet_region }}"
+    #droplet_ids: "{{ droplet_ids }}"
+    tag: awx
+    oauth_token: '{{ do_api_token }}'
+  run_once: True
+  tags: [ 'never', 'teardown' ]
+
+#- name: Add droplets to DigitalOcean Load Balancer
+#  delegate_to: 127.0.0.1
+#  community.digitalocean.digital_ocean_loadbalancer:
+#    name: "leader.{{ awx_base_domain }}"
+#    droplets:
+#      - awx1.perthchat2.org
+#      - awx2.perthchat2.org
+#      - awx3.perthchat2.org
+#  with_items: 
+
+- name: Gather facts about all load balancers
+  digital_ocean_load_balancer_facts:
+    name: "leader.{{ awx_base_domain }}"
+    oauth_token: "{{ oauth_token }}"
+  register: load_balancer_facts
+
+- debug:
+    msg: "load_balancer_facts: {{ load_balancer_facts }}"

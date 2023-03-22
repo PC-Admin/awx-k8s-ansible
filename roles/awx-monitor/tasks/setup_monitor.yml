@@ -1,0 +1,209 @@
+---
+
+- name: Install Prometheus Node Exporter on the AWX Server
+  ansible.builtin.package:
+    pkg:
+    - prometheus
+    - prometheus-node-exporter
+  register: package_status
+  until: package_status is success
+  delay: 6
+  retries: 10
+
+- name: Make sure Prometheus unit is running and enabled on AWX Server
+  ansible.builtin.systemd:
+    state: started
+    name: prometheus
+    enabled: yes
+
+- name: Make sure Prometheus Node Exporter unit is running and enabled on AWX Server
+  ansible.builtin.systemd:
+    state: started
+    name: prometheus-node-exporter
+    enabled: yes
+
+- name: Install the Grafana prerequisites on Backup Server
+  delegate_to: '{{ backup_server_ip }}'
+  ansible.builtin.package:
+    pkg:
+    - docker.io
+    - apache2
+    - apt-transport-https
+    - certbot
+    - python3-certbot-apache
+  register: package_status
+  until: package_status is success
+  delay: 6
+  retries: 10
+
+- name: Install Prometheus Node Exporter on the Backup Server
+  delegate_to: '{{ backup_server_ip }}'
+  ansible.builtin.package:
+    pkg:
+    - prometheus
+    - prometheus-node-exporter
+  register: package_status
+  until: package_status is success
+  delay: 6
+  retries: 10
+
+- name: Make sure Prometheus unit is running and enabled on AWX Server
+  delegate_to: '{{ backup_server_ip }}'
+  ansible.builtin.systemd:
+    state: started
+    name: prometheus
+    enabled: yes
+
+- name: Make sure Prometheus Node Exporter unit is running and enabled on Backup Server
+  delegate_to: '{{ backup_server_ip }}'
+  ansible.builtin.systemd:
+    state: started
+    name: prometheus-node-exporter
+    enabled: yes
+
+- name: Update repos on the Backup Server
+  delegate_to: '{{ backup_server_ip }}'
+  ansible.builtin.package:
+    update_cache: yes
+  register: package_status
+  until: package_status is success
+  delay: 6
+  retries: 10
+
+#- name: Stop grafana in Docker
+#  delegate_to: '{{ backup_server_ip }}'
+#  command: /usr/bin/docker stop grafana
+#  ignore_errors: True
+
+- name: Ensure grafana image is pulled
+  delegate_to: '{{ backup_server_ip }}'
+  command: docker pull grafana/grafana 
+
+- name: Ensure grafana.service installed
+  delegate_to: '{{ backup_server_ip }}'
+  ansible.builtin.template:
+    src: "{{ role_path }}/templates/grafana.service.j2"
+    dest: "/etc/systemd/system/grafana.service"
+    mode: 0644
+
+- name: Start and enable new grafana unit on Backup Server
+  delegate_to: '{{ backup_server_ip }}'
+  ansible.builtin.systemd:
+    state: started
+    name: grafana
+    enabled: yes
+
+- name: Check if Diffie Hellman file already exists
+  delegate_to: '{{ backup_server_ip }}'
+  stat:
+    path: '/etc/ssl/grafana_dhparam.pem'
+  when: not self_signed_certs | bool
+  register: stat_result
+
+- name: Generate Diffie-Hellman parameters if not
+  delegate_to: '{{ backup_server_ip }}'
+  openssl_dhparam:
+    path: '/etc/ssl/grafana_dhparam.pem'
+    size: 2048
+  when: not stat_result.stat.exists and not self_signed_certs | bool
+
+- name: Check if the cert for Grafana already exists
+  delegate_to: '{{ backup_server_ip }}'
+  stat:
+    path: '/etc/letsencrypt/live/{{ grafana_url }}/fullchain.pem'
+  when: not self_signed_certs | bool
+  register: stat_result_2
+
+- name: Generate letsencrypt certificate for Grafana if not
+  delegate_to: '{{ backup_server_ip }}'
+  command: certbot certonly --apache --noninteractive --agree-tos -m {{ certbot_email }} -d '{{ grafana_url }}'
+  when: not stat_result_2.stat.exists and not self_signed_certs | bool
+
+- name: Generate self-signed certificate
+  delegate_to: '{{ backup_server_ip }}'
+  command: openssl req -x509 -nodes -newkey rsa:2048 -keyout /etc/ssl/certs/{{ grafana_url }}.pem -out /etc/ssl/certs/{{ grafana_url }}.pem -days 365 -subj "/CN={{ grafana_url }}"
+  when: self_signed_certs | bool
+
+- name: Creates a crontab entry to renew certbot"
+  delegate_to: '{{ backup_server_ip }}'
+  cron:
+    name: "Renew letsencrypt certificate"
+    special_time: daily
+    user: root
+    job: '/bin/sh /usr/bin/certbot renew --quiet --no-self-upgrade'
+  when: not self_signed_certs | bool
+
+- name: Make sure prerequisite Apache units are enabled on Backup Server (1/5)
+  delegate_to: '{{ backup_server_ip }}'
+  ansible.builtin.command: a2enmod proxy
+  args:
+    creates: '/etc/apache2/mods-enabled/proxy.load'
+
+- name: Make sure prerequisite Apache units are enabled on Backup Server (2/5)
+  delegate_to: '{{ backup_server_ip }}'
+  ansible.builtin.command: a2enmod proxy_http
+  args:
+    creates: '/etc/apache2/mods-enabled/proxy_http.load'
+
+- name: Make sure prerequisite Apache units are enabled on Backup Server (3/5)
+  delegate_to: '{{ backup_server_ip }}'
+  ansible.builtin.command: a2enmod rewrite
+  args:
+    creates: '/etc/apache2/mods-enabled/rewrite.load'
+
+- name: Make sure prerequisite Apache units are enabled on Backup Server (4/5)
+  delegate_to: '{{ backup_server_ip }}'
+  ansible.builtin.command: a2enmod ssl
+  args:
+    creates: '/etc/apache2/mods-enabled/ssl.load'
+
+- name: Make sure prerequisite Apache units are enabled on Backup Server (5/5)
+  delegate_to: '{{ backup_server_ip }}'
+  ansible.builtin.command: a2enmod headers
+  args:
+    creates: '/etc/apache2/mods-enabled/headers.load'
+
+- name: Template the HTTPS site for Grafana on Backup Server
+  delegate_to: '{{ backup_server_ip }}'
+  ansible.builtin.template:
+    src: '{{ role_path }}/templates/apache-https.conf.j2'
+    dest: /etc/apache2/sites-available/{{ grafana_url }}.conf
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Template the SSL config for apache on Backup Server
+  delegate_to: '{{ backup_server_ip }}'
+  ansible.builtin.template:
+    src: '{{ role_path }}/templates/ssl.conf'
+    dest: /etc/apache2/mods-available/ssl.conf
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Enable HTTPS site for Grafana on Backup Server
+  delegate_to: '{{ backup_server_ip }}'
+  ansible.builtin.command: 'a2ensite {{ grafana_url }}.conf'
+  args:
+    creates: '/etc/apache2/sites-enabled/{{ grafana_url }}.conf'
+
+- name: Disable default Apache site on Backup Server
+  delegate_to: '{{ backup_server_ip }}'
+  ansible.builtin.command: 'a2dissite 000-default.conf'
+  args:
+    removes: '/etc/apache2/sites-enabled/000-default.conf'
+
+- name: Test that there are no errors in the syntax of the new Apache config file
+  delegate_to: '{{ backup_server_ip }}'
+  ansible.builtin.command: apache2ctl configtest
+
+- name: Restart Apache unit on Backup Server
+  delegate_to: '{{ backup_server_ip }}'
+  ansible.builtin.systemd:
+    state: restarted
+    name: apache2
+    enabled: yes
+
+- name: Pause for 15 seconds so Grafana can warm up
+  pause:
+    seconds: 15

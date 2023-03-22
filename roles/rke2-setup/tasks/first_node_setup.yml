@@ -1,0 +1,113 @@
+---
+
+# Install RKE2 installation script
+# curl -sfL https://get.rke2.io --output install.sh
+# chmod +x install.sh
+
+- name: Install RKE2 installation script on bootstrap node
+  delegate_to: "{{ rke2_bootstrap_node }}"
+  ansible.builtin.get_url:
+    url: https://get.rke2.io
+    dest: /root/install.sh
+    mode: 0755
+  run_once: True
+
+- name: Run RKE2 installation script on bootstrap node
+  delegate_to: "{{ rke2_bootstrap_node }}"
+  ansible.builtin.shell: |
+      /root/install.sh
+  run_once: True
+
+#- name: Create /etc/rancher/rke2/config.yaml 
+#  ansible.builtin.copy:
+#    content: |
+#        token: {{ rke2_token }}
+#        server: https://{{ rke2_server }}:9345
+#    dest: /etc/rancher/rke2/config.yaml
+#    owner: root
+#    group: root
+#    mode: '0640'
+
+- name: Enable and start RKE2
+  delegate_to: "{{ rke2_bootstrap_node }}"
+  ansible.builtin.systemd:
+    name: rke2-server
+    state: started
+    enabled: yes
+  run_once: True
+
+- name: Wait for RKE2 to start
+  delegate_to: "{{ rke2_bootstrap_node }}"
+  ansible.builtin.wait_for:
+    port: 9345
+    state: started
+    timeout: 60
+  run_once: True
+
+- name: Collect RKE2 token from /var/lib/rancher/rke2/server/node-token file
+  delegate_to: "{{ rke2_bootstrap_node }}"
+  ansible.builtin.slurp:
+    src: /var/lib/rancher/rke2/server/node-token
+  register: rke2_token
+  run_once: True
+
+- name: DEBUG Print RKE2 token
+  debug:
+    msg: "{{ rke2_token['content'] | b64decode | trim }}"
+  run_once: True
+
+- name: Set RKE2 token fact
+  set_fact:
+    rke2_token: "{{ rke2_token['content'] | b64decode | trim }}"
+  #run_once: True
+
+# After running this installation:
+
+# - The rke2-server service will be installed. The rke2-server service will be configured to automatically restart after node reboots or if the process crashes 
+#   or is killed.
+#
+# - Additional utilities will be installed at /var/lib/rancher/rke2/bin/. They include: kubectl, crictl, and ctr. 
+#   Note that these are not on your path by default.
+#
+# - Two cleanup scripts will be installed to the path at /usr/local/bin/rke2. They are: rke2-killall.sh and rke2-uninstall.sh.
+#
+# - A kubeconfig file will be written to /etc/rancher/rke2/rke2.yaml.
+#
+# - A token that can be used to register other server or agent nodes will be created at /var/lib/rancher/rke2/server/node-token
+
+
+#The RKE2 config file needs to be created manually. You can do that by running touch /etc/rancher/rke2/config.yaml as a privileged user.
+
+#token: my-shared-secret
+#tls-san:
+#  - my-kubernetes-domain.com
+#  - another-kubernetes-domain.com
+
+- name: Create the RKE2 config file on the bootstrap node
+  delegate_to: "{{ rke2_bootstrap_node }}"
+  blockinfile:
+    path: /etc/rancher/rke2/config.yaml
+    create: yes
+    mode: '0640'
+    block: |
+      token: {{ rke2_token }}
+      server: https://{{ rke2_bootstrap_node }}:9345
+      tls-san:
+  run_once: True
+
+- name: Add domains of all nodes to the RKE2 config file on the bootstrap node
+  delegate_to: "{{ rke2_bootstrap_node }}"
+  lineinfile:
+    path: /etc/rancher/rke2/config.yaml
+    line: "        - {{ item }}"
+    insertafter: "tls-san:"
+    state: present
+  with_items: "{{ ansible_play_hosts }}"
+  run_once: True
+
+- name: Restart RKE2 on the bootstrap node
+  delegate_to: "{{ rke2_bootstrap_node }}"
+  ansible.builtin.systemd:
+    name: rke2-server
+    state: restarted
+  run_once: True

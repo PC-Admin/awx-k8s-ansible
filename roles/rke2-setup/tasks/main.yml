@@ -1,0 +1,17 @@
+---
+
+# Run pre-check for install RKE2
+- import_tasks: "{{ role_path }}/tasks/pre_check.yml"
+  tags: rke2-setup
+
+# Setup the first RKE2 node
+- import_tasks: "{{ role_path }}/tasks/first_node_setup.yml"
+  tags: rke2-setup
+
+# Setup additional RKE2 nodes
+- import_tasks: "{{ role_path }}/tasks/additional_nodes_setup.yml"
+  tags: rke2-setup
+
+# Setup RKE2 worker nodes
+- import_tasks: "{{ role_path }}/tasks/worker_nodes_setup.yml"
+  tags: rke2-setup

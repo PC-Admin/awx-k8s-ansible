@@ -1,0 +1,31 @@
+---
+
+- name: Collect timezone of AWX server (Debian and derivatives only)
+  command: cat /etc/timezone
+  register: timezone_output
+
+- name: Create an rrule string for the 'Deploy an AWX Server'
+  set_fact:
+    rrule_line_update: "DTSTART;TZID={{ timezone_output.stdout }}:{{ update_schedule_start }} RRULE:FREQ={{ update_schedule_frequency }};INTERVAL={{ update_schedule_interval }}"
+
+- name: Build a schedule for 'Deploy an AWX Server' job template
+  awx.awx.tower_schedule:
+    name: "Deploy AWX Server"
+    enabled: yes
+    state: present
+    unified_job_template: "Deploy an AWX Server"
+    extra_data: "{{ lookup('file', '{{ role_path }}/extra-vars/update_all.json') }}"
+    rrule: "{{ rrule_line_update }}"
+    tower_host: "https://{{ awx_url }}"
+    tower_oauthtoken: "{{ awx_session_token.ansible_facts.tower_token.token }}"
+    validate_certs: "{{ validate_certs }}"
+
+- name: Delete the AWX session token for executing modules
+  awx.awx.tower_token:
+    description: 'AWX Session Token'
+    scope: "write"
+    state: absent
+    existing_token_id: "{{ awx_session_token.ansible_facts.tower_token.id }}"
+    tower_host: "https://{{ awx_url }}"
+    tower_oauthtoken: "{{ awx_session_token.ansible_facts.tower_token.token }}"
+    validate_certs: "{{ validate_certs }}"

@@ -1,0 +1,8 @@
+#!/bin/bash
+echo "Cleaning up excess local AWX dumps."
+cd /data/backup
+num_backups=$(ls ./ | grep tower | wc -l)
+if [ num_backups > {{ backup_local_copies }} ]
+then
+    rm -rf $(ls ./ | grep tower | tail -n +{{ backup_local_copies + 1 }})
+fi

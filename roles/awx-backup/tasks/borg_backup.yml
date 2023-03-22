@@ -1,0 +1,452 @@
+---
+
+- name: Copy tokens.yml file to local machine
+  ansible.builtin.fetch:
+    src: /data/projects/awx/tokens.yml
+    dest: /tmp/tokens.yml
+    flat: yes
+
+- name: Include AWX/Automation Controller master token from awx_tokens.yml
+  include_vars:
+    file: /tmp/tokens.yml
+  no_log: True
+
+- name: Create a AWX session token for executing AWX modules
+  awx.awx.tower_token:
+    description: 'AWX Session Token'
+    scope: "write"
+    state: present
+    tower_host: "https://{{ awx_url }}"
+    tower_oauthtoken: "{{ master_token }}"
+    validate_certs: "{{ validate_certs }}"
+  register: awx_session_token
+
+- name: Add Backup Server host to the AWX Server inventory
+  awx.awx.tower_host:
+    name: "{{ backup_server_ip }}"
+    description: "The Backup Server, accessed at its IP."
+    inventory: "AWX Server"
+    state: present
+    tower_host: "https://{{ awx_url }}"
+    tower_oauthtoken: "{{ awx_session_token.ansible_facts.tower_token.token }}"
+    validate_certs: "{{ validate_certs }}"
+
+- name: Create borg user on AWX server
+  ansible.builtin.user:
+    name: borg
+    shell: /bin/bash
+    #shell: /bin/rbash
+    password: '!'
+
+- name: Create borg user on Backup server
+  delegate_to: '{{ backup_server_ip }}'
+  ansible.builtin.user:
+    name: borg
+    shell: /bin/bash
+    password: '!'
+
+- name: Create borg users ~/.ssh if it does not exist
+  ansible.builtin.file:
+    path: /home/borg/.ssh/
+    state: directory
+    owner: borg
+    group: borg
+    mode: '0700'
+
+- name: Create borg users ~/.cache if it does not exist
+  ansible.builtin.file:
+    path: /home/borg/.cache/
+    state: directory
+    owner: borg
+    group: borg
+    mode: '0755'
+
+- name: Generate or regenerate a Borgmatic SSH e25519 keypair
+  community.crypto.openssh_keypair:
+    comment: "Borgmatic AWX Server  > Backup Server."
+    path: /home/borg/.ssh/borgmatic
+    type: "ed25519"
+    regenerate: always
+    owner: borg
+    group: borg
+    mode: '0600'
+
+- name: Generate or regenerate a borg_user SSH e25519 keypair
+  community.crypto.openssh_keypair:
+    comment: "'borg' user on AWX & Backup servers."
+    path: /home/borg/.ssh/borg_user
+    type: "ed25519"
+    regenerate: always
+    owner: borg
+    group: borg
+    mode: '0600'
+
+- name: Create a Vault credential for Borgmatic Password
+  awx.awx.credential:
+    name: Borgmatic Password
+    credential_type: Vault
+    organization: "{{ org_name }}"
+    inputs:
+      vault_password: "{{ backup_passphrase }}"
+      vault_id: "awx_borg_password"
+    tower_host: "https://{{ awx_url }}"
+    tower_oauthtoken: "{{ awx_session_token.ansible_facts.tower_token.token }}"
+    validate_certs: "{{ validate_certs }}"
+
+- name: Slurp up new borg_user private key
+  ansible.builtin.slurp:
+    src: /home/borg/.ssh/borg_user
+  register: borg_user_ssh_private_key
+  no_log: true
+
+- name: Add/Update machine credential
+  awx.awx.credential:
+    name: "AWX SSH Key"
+    description: "The SSH key for AWX to connect to its own host OS as the borg user. Also the SSH key it uses to do the borgmatic backup."
+    organization: "{{ org_name }}"
+    credential_type: Machine
+    state: present
+    inputs:
+      ssh_key_data: "{{ borg_user_ssh_private_key['content'] | b64decode }}"
+    tower_host: "https://{{ awx_url }}"
+    tower_oauthtoken: "{{ awx_session_token.ansible_facts.tower_token.token }}"
+    validate_certs: "{{ validate_certs }}"
+
+- name: Delete private borg_user SSH e25519 key
+  ansible.builtin.file:
+    state: absent
+    path: /home/borg/.ssh/borg_user
+
+- name: Slurp up new borg_user.pub key
+  ansible.builtin.slurp:
+    src: /home/borg/.ssh/borg_user.pub
+  register: borg_user_ssh_public_key
+
+- name: Set authorized key to allow this public key on the AWX Server
+  ansible.builtin.lineinfile:
+    path: /home/borg/.ssh/authorized_keys
+    #regexp: '^.*$'
+    line: "{{ borg_user_ssh_public_key['content'] | b64decode }}"
+    create: true
+    owner: borg
+    group: borg
+    mode: '0600'
+
+- name: Set authorized key to allow this public key on the Backup Server
+  delegate_to: '{{ backup_server_ip }}'
+  ansible.builtin.lineinfile:
+    path: /home/borg/.ssh/authorized_keys
+    #regexp: '^.*$'
+    line: "{{ borg_user_ssh_public_key['content'] | b64decode }}"
+    create: true
+    owner: borg
+    group: borg
+    mode: '0600'
+
+- name: Update 'AWX Ansible' project
+  awx.awx.tower_project_update:
+    name: "AWX Ansible"
+    timeout: 300
+    tower_host: "https://{{ awx_url }}"
+    tower_oauthtoken: "{{ awx_session_token.ansible_facts.tower_token.token }}"
+    validate_certs: "{{ validate_certs }}"
+
+- name: Create 'AWX Backup [Borgmatic]' job template
+  awx.awx.tower_job_template:
+    name: "AWX Backup [Borgmatic]"
+    description: "Backs up the AWX host system to the external Backup Server."
+    job_type: run
+    inventory: "AWX Server"
+    project: "AWX Ansible"
+    playbook: "playbooks/backup.yml"
+    credentials: [ "AWX SSH Key", "Borgmatic Password" ]
+    extra_vars: { awx_url: "{{ awx_url }}", BORG_PASSPHRASE: "{{ backup_passphrase }}", ansible_user: "borg" }
+    state: present
+    verbosity: 1
+    tower_host: "https://{{ awx_url }}"
+    tower_oauthtoken: "{{ awx_session_token.ansible_facts.tower_token.token }}"
+    validate_certs: "{{ validate_certs }}"
+
+- name: Create 'AWX Error Report' job template
+  awx.awx.tower_job_template:
+    name: "AWX Error Report"
+    description: "Emails a failed jobs output to the administrator."
+    job_type: run
+    inventory: "AWX Server"
+    project: "AWX Ansible"
+    playbook: playbooks/error_report.yml
+    credential: "AWX SSH Key"
+    extra_vars: { host_awx_url: "{{ awx_url }}", awx_token: "{{ master_token }}", mailgun_api_token: "{{ mailgun_api_token }}", mailgun_domain_name: "{{ mailgun_domain_name }}", "admin_email": "{{ admin_email }}" }
+    state: present
+    verbosity: 1
+    tower_host: "https://{{ awx_url }}"
+    tower_oauthtoken: "{{ awx_session_token.ansible_facts.tower_token.token }}"
+    validate_certs: "{{ validate_certs }}"
+
+- name: Create 'AWX Backup' workflow template
+  awx.awx.workflow_job_template:
+    name: "AWX Backup"
+    description: "Backup the AWX server by first making a local dump, then using borgmatic to back it up."
+    workflow_nodes:
+      - identifier: "Local Dump"
+        job_type: run
+        unified_job_template:
+          name: "AWX Backup [Local Dump]"
+          type: job_template
+        related:
+          success_nodes:
+            - identifier: "Borgmatic"
+          failure_nodes:
+            - identifier: "Error Report 1"
+          always_nodes: []
+      - identifier: "Borgmatic"
+        job_type: run
+        unified_job_template:
+          name: "AWX Backup [Borgmatic]"
+          type: job_template
+        related:
+          success_nodes: []
+          failure_nodes:
+            - identifier: "Error Report 2"
+          always_nodes: []
+      - identifier: "Error Report 1"
+        job_type: run
+        unified_job_template:
+          name: "AWX Error Report"
+          type: job_template
+      - identifier: "Error Report 2"
+        job_type: run
+        unified_job_template:
+          name: "AWX Error Report"
+          type: job_template
+    tower_host: "https://{{ awx_url }}"
+    tower_oauthtoken: "{{ awx_session_token.ansible_facts.tower_token.token }}"
+    validate_certs: "{{ validate_certs }}"
+
+- name: Collect timezone of AWX server (Debian and derivatives only)
+  command: cat /etc/timezone
+  register: timezone_output
+
+- name: Create an rrule string for scheduling 'Backup AWX'
+  set_fact:
+    rrule_line_backup_awx: "DTSTART;TZID={{ timezone_output.stdout }}:{{ backup_awx_schedule_start }} RRULE:FREQ={{ backup_awx_schedule_frequency }};INTERVAL={{ backup_awx_schedule_interval }}"
+
+- name: Build a schedule for 'AWX Backup' workflow template
+  awx.awx.tower_schedule:
+    name: "AWX Backup"
+    enabled: yes
+    state: present
+    unified_job_template: "AWX Backup"
+    rrule: "{{ rrule_line_backup_awx }}"
+    tower_host: "https://{{ awx_url }}"
+    tower_oauthtoken: "{{ awx_session_token.ansible_facts.tower_token.token }}"
+    validate_certs: "{{ validate_certs }}"
+
+- name: Create 'AWX Backup [List Backups]' job template
+  awx.awx.tower_job_template:
+    name: "AWX Backup [List Backups]"
+    description: "Lists the local dumps on the AWX server and the remote borgmatic history."
+    job_type: run
+    inventory: "AWX Server"
+    project: "AWX Ansible"
+    playbook: playbooks/backups_list.yml
+    credential: "AWX SSH Key"
+    extra_vars: { awx_url: "{{ awx_url }}", backup_server_ip: "{{ backup_server_ip }}", BORG_PASSPHRASE: "{{ backup_passphrase }}", ansible_user: "borg" }
+    state: present
+    verbosity: 1
+    tower_host: "https://{{ awx_url }}"
+    tower_oauthtoken: "{{ awx_session_token.ansible_facts.tower_token.token }}"
+    validate_certs: "{{ validate_certs }}"
+
+- name: Delete the AWX session token for executing modules
+  awx.awx.tower_token:
+    description: 'AWX Session Token'
+    scope: "write"
+    state: absent
+    existing_token_id: "{{ awx_session_token.ansible_facts.tower_token.id }}"
+    tower_host: "https://{{ awx_url }}"
+    tower_oauthtoken: "{{ awx_session_token.ansible_facts.tower_token.token }}"
+    validate_certs: "{{ validate_certs }}"
+
+- name: Add prerequisite packages to Backup Server
+  delegate_to: '{{ backup_server_ip }}'
+  ansible.builtin.package:
+    pkg:
+    - borgmatic
+    - sudo
+  register: package_status
+  until: package_status is success
+  delay: 6
+  retries: 10
+
+- name: Add prerequisite packages to AWX
+  ansible.builtin.package:
+    pkg:
+    - borgmatic
+    - sudo
+  register: package_status
+  until: package_status is success
+  delay: 6
+  retries: 10
+
+- name: Ensure root users ~/.ssh/ folder exists on AWX
+  ansible.builtin.file:
+    path: /root/.ssh/
+    state: directory
+    mode: 0700
+    owner: root
+    group: root
+
+- name: Ensure root users ~/.ssh/ folder exists on backup server
+  delegate_to: '{{ backup_server_ip }}'
+  ansible.builtin.file:
+    path: /home/borg/.ssh/
+    state: directory
+    mode: 0700
+    owner: borg
+    group: borg
+
+- name: Slurp up new borgmatric.pub key
+  ansible.builtin.slurp:
+    src: /home/borg/.ssh/borgmatic.pub
+  register: borgmatic_ssh_public_key
+
+- name: Write public SSH key to authorized_keys of backup server
+  delegate_to: '{{ backup_server_ip }}'
+  ansible.builtin.lineinfile:
+    path: /home/borg/.ssh/authorized_keys
+    regexp: '^command="borg serve --restrict-to-path {{ backup_directory }}",restrict.*$'
+    line: |
+        command="borg serve --restrict-to-path {{ backup_directory }}",restrict {{ borgmatic_ssh_public_key['content'] | b64decode }}
+    owner: borg
+    group: borg
+    mode: '0600'
+    create: yes
+
+- name: Add SSH config entry for accessing the backup server
+  ansible.builtin.blockinfile:
+    path: "/home/borg/.ssh/config"
+    marker_begin: "BEGIN SSH config entry for {{ awx_url }} backup transmission"
+    marker_end: "END SSH config entry for {{ awx_url }} backup transmission"
+    block: |
+      Host {{ backup_server_ip }}
+          HostName {{ backup_server_ip }}
+          User borg
+          Port 22
+          IdentityFile /home/borg/.ssh/borgmatic
+          IdentitiesOnly=yes
+    owner: borg
+    group: borg
+    mode: '0600'
+    create: yes
+
+- name: Perform initial SSH handshake, accept the key blindly
+  become: true
+  become_user: borg
+  ansible.builtin.command: |
+      ssh -o "StrictHostKeyChecking no" {{ backup_server_ip }} exit
+
+- name: Install Borgmatic on AWX
+  ansible.builtin.package:
+    pkg:
+    - borgmatic
+  register: package_status
+  until: package_status is success
+  delay: 6
+  retries: 10
+
+- name: Install Borgmatic on the backup server
+  delegate_to: '{{ backup_server_ip }}'
+  ansible.builtin.package:
+    pkg:
+    - borgmatic
+  register: package_status
+  until: package_status is success
+  delay: 6
+  retries: 10
+
+- name: Ensure backup directory exists on backup server
+  delegate_to: '{{ backup_server_ip }}'
+  ansible.builtin.file:
+    path: '{{ backup_directory }}'
+    state: directory
+    mode: 0755
+    owner: borg
+    group: borg
+
+- name: Ensure borg users ~/.cache directory exists on Backup Server
+  delegate_to: '{{ backup_server_ip }}'
+  ansible.builtin.file:
+    path: "/home/borg/.cache/"
+    state: directory
+    recurse: yes
+    mode: 0755
+    owner: borg
+    group: borg
+
+- name: Ensure borg users ~/.config directory exists on Backup Server
+  delegate_to: '{{ backup_server_ip }}'
+  ansible.builtin.file:
+    path: "/home/borg/.config/borgmatic/"
+    state: directory
+    recurse: yes
+    mode: 0755
+    owner: borg
+    group: borg
+
+- name: Perform borg init on backup server
+  delegate_to: '{{ backup_server_ip }}'
+  become: true
+  become_user: borg
+  shell: 'borg init --encryption=repokey {{ backup_directory }}'
+  environment:
+    BORG_PASSPHRASE: '{{ backup_passphrase }}'
+  args:
+    creates: '{{ backup_directory }}nonce'
+
+- name: Ensure borgmatic config directory exists on AWX Server
+  ansible.builtin.file:
+    path: "/home/borg/.config/borgmatic/"
+    state: directory
+    mode: 0755
+    owner: borg
+    group: borg
+
+#- name: Ensure ansible config directory exists on AWX Server
+#  ansible.builtin.file:
+#    path: "/home/borg/.ansible/"
+#    state: directory
+#    mode: 0755
+#    owner: borg
+#    group: borg
+
+- name: Save borgmatic config file on AWX Server
+  template:
+    src: '{{ role_path }}/templates/borg-config.yaml.j2'
+    dest: '/home/borg/.config/borgmatic/config.yaml'
+
+- name: Save cleanup.sh file on AWX Server
+  template:
+    src: '{{ role_path }}/templates/cleanup.sh.j2'
+    dest: '/data/backup/cleanup.sh'
+    attributes: "+i"
+    mode: 0554
+    owner: root
+    group: root
+
+- name: Allow borg user to run the cleanup.sh script as root
+  lineinfile:
+    dest: /etc/sudoers
+    state: present
+    insertafter: "# User privilege specification"
+    line: "borg ALL=(root) NOPASSWD: /data/backup/cleanup.sh"
+    validate: visudo -cf %s
+
+- name: Save list.sh file on AWX Server
+  template:
+    src: '{{ role_path }}/templates/list.sh'
+    dest: '/data/backup/list.sh'
+    attributes: "+i"
+    mode: 0554
+    owner: borg
+    group: borg

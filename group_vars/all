@@ -1,0 +1,13 @@
+awx_base_domain: example.org
+do_droplet_region: sgp1
+do_api_token: << DigitalOcean API Token >>
+slug_size: s-4vcpu-8gb
+swap_size: "4G"
+do_image: ubuntu-22-04-x64
+cloudflare_email: useremail@protonmail.com
+cloudflare_api_token: << Cloudflare API Token >>
+#cloudflare_zone_name: example.org
+ssh_key_file_public: ~/.ssh/testing_2022.pub
+ssh_key_file_private: ~/.ssh/testing_2022
+ssh_key_file_password: << SSH Key Passphrase >>
+public_ssh_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AADFTJYPCF0uLvDUiO7mRdqkwiueeUgyTrK6R3WTN/dg0DJt michael@perthchat.org 11-2022"

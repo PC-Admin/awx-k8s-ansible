@@ -1,0 +1,13 @@
+---
+
+- name: "Setup for the AWX/Automation Controller system."
+  hosts: "{{ 'awx_servers' }}"
+  gather_facts: no
+
+  roles:
+    - provision
+    - rke2-setup
+    - awx-install
+    - awx-custom-config
+    - awx-backup
+    - awx-monitor
