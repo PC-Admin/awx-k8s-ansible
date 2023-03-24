@@ -1,5 +1,19 @@
 ---
 
+- name: Create a dynamic group for controlplane nodes
+  group_by:
+    key: "controlplane_{{ 'yes' if rke2_controlplane | bool else 'no' }}"
+
+- name: Create list of controlplane nodes
+  set_fact:
+    controlplane_hosts: "{{ groups['controlplane_yes'] }}"
+  run_once: True
+
+- name: DEBUG Print list of controlplane nodes
+  debug:
+    msg: "{{ groups['controlplane_yes'] }}"
+  run_once: True
+
 - name: Get a list of all ansible hosts minus the bootstrap node
   set_fact:
     additional_rke2_nodes: "{{ ansible_play_hosts | difference([rke2_bootstrap_node]) }}"
@@ -10,7 +24,7 @@
     msg: "{{ additional_rke2_nodes }}"
   run_once: True
 
-- name: Install RKE2 installation script on additional nodes
+- name: Download RKE2 installation script to each additional host
   delegate_to: "{{ item }}"
   ansible.builtin.get_url:
     url: https://get.rke2.io
@@ -19,30 +33,12 @@
   loop: "{{ additional_rke2_nodes }}"
   run_once: True
 
-- name: Run RKE2 installation script on all nodes that are control planes
+- name: Install RKE2 server on additional nodes that are control-planes
   ansible.builtin.shell: |
       /root/install.sh
   environment:
     INSTALL_RKE2_TYPE: "server"
-  when: "'controlplane' in rke2_roles"
-
-- name: Run RKE2 installation script on additional nodes that are NOT control planes
-  delegate_to: "{{ item }}"
-  ansible.builtin.shell: |
-      /root/install.sh
-  when: "'controlplane' not in rke2_roles"
-
-#- name: Create /etc/rancher/rke2/config.yaml on additional nodes
-#  ansible.builtin.copy:
-#    content: |
-#        token: {{ rke2_token }}
-#        server: https://{{ rke2_bootstrap_node }}:9345
-#    dest: /etc/rancher/rke2/config.yaml
-#    owner: root
-#    group: root
-#    mode: '0640'
-#  loop: "{{ additional_rke2_nodes }}"
-#  run_once: True
+  when: rke2_controlplane | bool
 
 - name: Ensure that the /etc/rancher/rke2 directory exists on the additional nodes
   delegate_to: "{{ item }}"
@@ -52,8 +48,7 @@
     mode: '0755'
   with_items: "{{ additional_rke2_nodes }}"
 
-- name: Create the RKE2 config file on the additional nodes
-  delegate_to: "{{ item }}"
+- name: Create the RKE2 config file on the additional nodes that are control-planes
   blockinfile:
     path: /etc/rancher/rke2/config.yaml
     create: yes
@@ -62,47 +57,78 @@
       token: {{ rke2_token }}
       server: https://{{ rke2_bootstrap_node }}:9345
       tls-san:
-  with_items: "{{ additional_rke2_nodes }}"
+  when: rke2_controlplane | bool
 
-- name: Add domains of all nodes to the RKE2 config file on the additional nodes
-  delegate_to: "{{ item }}"
+- name: Create a new list of controlplane nodes
+  set_fact:
+    controlplane_nodes: "{{ ansible_play_hosts | select('match', 'rke2_roles_.*_controlplane') | select('not', 'match', 'rke2_roles_.*_worker') | list }}"
+
+- name: Print new list of controlplane nodes
+  debug:
+    msg: "{{ controlplane_nodes }}"
+  run_once: True
+
+- name: Add domains of all controlplane nodes to the RKE2 config files of each controlplane node
   lineinfile:
     path: /etc/rancher/rke2/config.yaml
     line: "        - {{ item }}"
     insertafter: "tls-san:"
     state: present
-  with_items: "{{ ansible_play_hosts }}"
+  with_items: "{{ controlplane_hosts }}"
+  when: rke2_controlplane | bool
 
-- name: Enable and start RKE2 on additional nodes
-  delegate_to: "{{ item }}"
+#- name: Restart the rke2-server service on the bootstrap node
+#  delegate_to: "{{ rke2_bootstrap_node }}"
+#  ansible.builtin.systemd:
+#   name: rke2-server
+#   state: restarted
+#  run_once: True
+#  async: 60
+#  poll: 10
+
+- name: Enable RKE2 service on additional control-plane nodes
   ansible.builtin.systemd:
-    name: rke2-agent
-    state: started
+    name: rke2-server
     enabled: yes
-  with_items: "{{ additional_rke2_nodes }}"
-  run_once: True
+  when: rke2_controlplane | bool
   async: 60
   poll: 10
 
-#- name: Wait for RKE2 to start on additional nodes
-#  delegate_to: "{{ item }}"
-#  ansible.builtin.wait_for:
-#    port: 9345
-#    state: started
-#    timeout: 60
-#  with_items: "{{ additional_rke2_nodes }}"
-#  run_once: True
+- name: Start RKE2 service on additional control-plane nodes
+  ansible.builtin.systemd:
+    name: rke2-server
+    state: started
+  when: rke2_controlplane | bool
+  async: 60
+  poll: 10
 
-# The following tasks are not needed for the additional nodes setup
+- name: Pause for 30 seconds to let the cluster come up
+  ansible.builtin.pause:
+    seconds: 30
 
-#4. Confirm cluster is functional
+- name: Label the additional nodes as controlplanes
+  delegate_to: "{{ rke2_bootstrap_node }}"
+  ansible.builtin.shell: |
+    /var/lib/rancher/rke2/bin/kubectl label node {{ awx_subdomain }} node-role.kubernetes.io/control-plane=control-plane --overwrite
+  environment:
+    KUBECONFIG: "/etc/rancher/rke2/rke2.yaml"
+  when: rke2_controlplane | bool
 
-#Once you've launched the rke2 server process on all server nodes, ensure that the cluster has come up properly with
+- name: Label the additional nodes as etcd
+  delegate_to: "{{ rke2_bootstrap_node }}"
+  ansible.builtin.shell: |
+    /var/lib/rancher/rke2/bin/kubectl label node {{ awx_subdomain }} node-role.kubernetes.io/etcd=etcd --overwrite
+  environment:
+    KUBECONFIG: "/etc/rancher/rke2/rke2.yaml"
+  when: rke2_controlplane | bool
 
-#/var/lib/rancher/rke2/bin/kubectl get nodes \
-#  --kubeconfig /etc/rancher/rke2/rke2.yaml 
-
-#You should see your server nodes in the Ready state.
+- name: Label the additional nodes as master
+  delegate_to: "{{ rke2_bootstrap_node }}"
+  ansible.builtin.shell: |
+    /var/lib/rancher/rke2/bin/kubectl label node {{ awx_subdomain }} node-role.kubernetes.io/master=master --overwrite
+  environment:
+    KUBECONFIG: "/etc/rancher/rke2/rke2.yaml"
+  when: rke2_controlplane | bool
 
 - name: Confirm cluster is functional
   delegate_to: "{{ rke2_bootstrap_node }}"

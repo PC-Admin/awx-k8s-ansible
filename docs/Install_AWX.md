@@ -19,12 +19,10 @@ After your finished you can delete these servers/records with the 'teardown' tag
 
 ## Setup DNS Entries for it
 
-1) A/AAAA record for awx.example.org to the servers IP.
+1) A/AAAA record for awx1.example.org to the servers IP.
 
 2) optionally, an A/AAAA record for rancher.example.org to the servers IP, 
     or a CNAME record for it pointing to awx.example.org.
-
-3) optionally, an A/AAAA record for grafana.example.org to the backup/monitor servers IP.
 
 
 ## Install
@@ -37,22 +35,13 @@ $ ansible-galaxy collection install community.digitalocean
 ```
 
 
-2) Edit host into: [./inventory/hosts](./inventory/hosts)
+2) Edit hosts into: [./inventory/hosts](./inventory/hosts)
 
 Create folder for each host at: ./inventory/host_vars/
 
-Record each hosts variables into each hosts ./inventory/host_vars/example.org/vars.yml file.
+Record each hosts variables into each hosts ./inventory/host_vars/awx1.example.org/vars.yml file.
 
 
 3) Run the playbook with the following tags:
 
 `$ ansible-playbook -v -i ./inventory/hosts -t "rke2-setup" setup.yml`
-
-NOTE: If using the monitor for the first time, you need to immediately go to your {{ grafana_url }} and set the initial administrator password manually.
-
-
-## Backup Rehearsal Demo
-
-1) Run with the 'backup-rehearsal' tag:
-
-`$ ansible-playbook -v -i ./inventory/hosts -t "backup-rehearsal" setup.yml`

@@ -9,7 +9,8 @@ certbot_email: example@protonmail.com
 # RKE2 Settings
 rke2_load_balancer: leader.example.org
 rke2_bootstrap_node: awx1.example.org
-rke2_roles: [ "controlplane", "worker" ]
+rke2_controlplane: true
+rke2_worker: true
 
 # AWX Settings
 admin_username: admin

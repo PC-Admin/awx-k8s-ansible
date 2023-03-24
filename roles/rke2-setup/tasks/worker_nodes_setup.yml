@@ -1,72 +1,79 @@
 ---
+# WORKER SECTION
 
-- name: If the node is a worker install the worker role
+- name: Get a list of all the worker only nodes
+  group_by:
+    key: "worker_only_hosts_{{ 'yes' if (rke2_worker | bool) and (not rke2_controlplane | bool) else 'no' }}"
+
+- name: Create list of all the worker only nodes
+  set_fact:
+    worker_only_hosts: "{{ groups['worker_only_hosts_yes'] }}"
+  run_once: True
+
+- name: DEBUG print list of worker only nodes
+  debug:
+    msg: "{{ worker_only_hosts }}"
+  run_once: True
+
+- name: Install RKE2 agent on additional nodes that are worker
   ansible.builtin.shell: |
       /root/install.sh
   environment:
     INSTALL_RKE2_TYPE: "agent"
-  when: "'worker' in rke2_roles" 
+  when: ( rke2_worker | bool ) and ( not rke2_controlplane | bool )
 
-- name: Enable the rke2-agent service
-  ansible.builtin.systemd:
-    name: rke2-agent
-    enabled: yes
-  when: "'worker' in rke2_roles"
-
-- name: Ensure that the /etc/rancher/rke2 directory exists on the worker nodes
-  ansible.builtin.file:
-    path: /etc/rancher/rke2
-    state: directory
-    mode: '0755'
-  when: "'worker' in rke2_roles"
-
-- name: Ensure the server line exists in each workers config file
+- name: On workers, add the StandardOutput options to the rke2-agent.service file (1/2)
   ansible.builtin.lineinfile:
-    path: /etc/rancher/rke2/config.yaml
-    line: "server: https://{{ rke2_bootstrap_node }}:9345"
+    path: /usr/local/lib/systemd/system/rke2-agent.service
+    insertafter: "^\\[Service\\]$"
+    line: "StandardOutput=journal"
     state: present
-  when: "'worker' in rke2_roles"
+  when: ( rke2_worker | bool ) and ( not rke2_controlplane | bool )
 
-- name: Ensure the token line exists in each workers config file
+- name: On workers, add the StandardError options to the rke2-agent.service file (2/2)
   ansible.builtin.lineinfile:
-    path: /etc/rancher/rke2/config.yaml
-    line: "token: {{ rke2_token }}"
+    path: /usr/local/lib/systemd/system/rke2-agent.service
+    insertafter: "^\\[Service\\]$"
+    line: "StandardError=journal"
     state: present
-  when: "'worker' in rke2_roles"
+  when: ( rke2_worker | bool ) and ( not rke2_controlplane | bool )
 
-- name: Label the worker nodes
-  delegate_to: "{{ rke2_bootstrap_node }}"
-  ansible.builtin.shell: |
-    /var/lib/rancher/rke2/bin/kubectl label node {{ awx_subdomain }} node-role.kubernetes.io/worker=worker --overwrite --kubeconfig /etc/rancher/rke2/rke2.yaml
-  when: "'worker' in rke2_roles"
-
-- name: Start the rke2-agent service
+- name: Reload the systemd daemon
   ansible.builtin.systemd:
-    name: rke2-agent
-    state: started
-  when: "'worker' in rke2_roles"
-  async: 60
-  poll: 10
+    daemon_reload: yes
+  when: ( rke2_worker | bool ) and ( not rke2_controlplane | bool )
 
-- name: Restart the rke2-agent service on the bootstrap node
-  delegate_to: "{{ rke2_bootstrap_node }}"
+- name: Create the RKE2 config file on the additional nodes that are workers
+  blockinfile:
+    path: /etc/rancher/rke2/config.yaml
+    create: yes
+    mode: '0640'
+    block: |
+      token: {{ rke2_token }}
+      server: https://{{ rke2_bootstrap_node }}:9345
+      agent:
+        log:
+          format: text
+          level: warn
+          output: journald
+  when: ( rke2_worker | bool ) and ( not rke2_controlplane | bool )
+
+- name: Enable and restart RKE2 agent on worker nodes
   ansible.builtin.systemd:
     name: rke2-agent
     state: restarted
-  when: "'worker' in rke2_roles"
+    enabled: yes
+  when: ( rke2_worker | bool ) and ( not rke2_controlplane | bool )
   async: 60
   poll: 10
 
-- name: Check rke2-agent service status
+- name: Label the additional nodes as worker
+  delegate_to: "{{ rke2_bootstrap_node }}"
   ansible.builtin.shell: |
-    systemctl status rke2-agent
-  register: rke2_agent_status
-  when: "'worker' in rke2_roles"
-
-- name: Display rke2-agent service status
-  ansible.builtin.debug:
-    msg: "{{ rke2_agent_status.stdout_lines }}"
-  when: "'worker' in rke2_roles"
+    /var/lib/rancher/rke2/bin/kubectl label node {{ awx_subdomain }} node-role.kubernetes.io/worker=worker --overwrite
+  environment:
+    KUBECONFIG: "/etc/rancher/rke2/rke2.yaml"
+  when: rke2_worker | bool
 
 - name: Confirm cluster is functional
   delegate_to: "{{ rke2_bootstrap_node }}"

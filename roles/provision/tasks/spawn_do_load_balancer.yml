@@ -12,9 +12,9 @@
     region: "{{ do_droplet_region }}"
     forwarding_rules:
       - entry_protocol: http
-        entry_port: 80
+        entry_port: 6443
         target_protocol: http
-        target_port: 80
+        target_port: 6443
     #tag: awx
     #tagged_by: value
     droplet_ids: "{{ droplet_ids }}"
